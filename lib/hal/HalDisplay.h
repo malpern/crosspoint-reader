@@ -39,6 +39,9 @@ class HalDisplay {
                             bool fromProgmem = false) const;
 
   void displayBuffer(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
+  // Partial windowed refresh (X4 only; X3 falls back to a full buffer refresh in the driver).
+  // x/y/w/h are physical panel coordinates; x and w must be 8-px aligned (caller's responsibility).
+  void displayWindow(int x, int y, int w, int h);
   void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
 
   // Power management

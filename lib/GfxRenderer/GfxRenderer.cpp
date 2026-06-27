@@ -1353,6 +1353,33 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   display.displayBuffer(refreshMode, fadingFix);
 }
 
+void GfxRenderer::displayWindow(int x, int y, int width, int height) const {
+  if (width <= 0 || height <= 0) return;
+  // Clip in logical space (mirrors fillRectImpl).
+  const int screenW = getScreenWidth();
+  const int screenH = getScreenHeight();
+  const int lx0 = std::max(0, x);
+  const int ly0 = std::max(0, y);
+  const int lx1 = std::min(screenW, x + width);
+  const int ly1 = std::min(screenH, y + height);
+  if (lx0 >= lx1 || ly0 >= ly1) return;
+
+  // Rotate opposing logical corners into physical-framebuffer space; rotation is
+  // rigid so the bbox of the two corners IS the physical rect (same as fillRect).
+  int paX, paY, pbX, pbY;
+  rotateCoordinates(orientation, lx0, ly0, &paX, &paY, panelWidth, panelHeight);
+  rotateCoordinates(orientation, lx1 - 1, ly1 - 1, &pbX, &pbY, panelWidth, panelHeight);
+  const int phyX0 = std::min(paX, pbX);
+  const int phyX1 = std::max(paX, pbX);  // inclusive
+  const int phyY0 = std::min(paY, pbY);
+  const int phyY1 = std::max(paY, pbY);  // inclusive
+
+  // E-ink panel DMA requires byte (8-px) alignment on x and width.
+  const int alignedX = (phyX0 / 8) * 8;
+  const int alignedW = ((phyX1 + 1 + 7) / 8) * 8 - alignedX;
+  display.displayWindow(alignedX, phyY0, alignedW, phyY1 - phyY0 + 1);
+}
+
 std::string GfxRenderer::truncatedText(const int fontId, const char* text, const int maxWidth,
                                        const EpdFontFamily::Style style) const {
   if (!text || maxWidth <= 0) return "";

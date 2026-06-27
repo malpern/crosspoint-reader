@@ -85,13 +85,19 @@ class EpubReaderActivity final : public Activity {
   std::unique_ptr<uint8_t[]> hlSavedBuffer; // clean-page framebuffer snapshot (lazy)
   size_t hlSavedBufferSize = 0;
   bool hlSavedValid = false;
+  // Logical bounding rect of the currently-shown highlight, so a partial refresh
+  // can clear it before drawing the next sentence.
+  int hlPrevX = 0, hlPrevY = 0, hlPrevW = 0, hlPrevH = 0;
+  bool hlPrevValid = false;
 
   void hlEnsurePageCache();                 // (re)load page geometry + scan sentences if stale
   void hlScanSentences();                   // build hlSentences from hlLines (punctuation-based)
   void hlSnapshotCleanPage();               // capture the clean framebuffer once per page
   void hlDrawSentence(const SentenceSpan& span);  // fill rect + inverted text behind the sentence
-  void hlRefresh(int ordinal);              // refreshAfterHighlight: re-blit + draw + one FAST refresh
-  void hlCycleNext();                       // debug trigger: advance to the next sentence
+  // Logical bounding rect (union over the sentence's lines); false if the span is empty.
+  bool hlSentenceBounds(const SentenceSpan& span, int& ox, int& oy, int& ow, int& oh);
+  void hlRefresh(int ordinal, bool partial);  // re-blit + draw; partial=window refresh, else HALF full-frame
+  void hlCycleNext(bool partial);             // debug trigger: advance to the next sentence
 #endif
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,

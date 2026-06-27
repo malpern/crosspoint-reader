@@ -239,12 +239,17 @@ void EpubReaderActivity::loop() {
   }
 
 #ifdef PHASE1_HIGHLIGHT_DEBUG
-  // Phase 1 debug trigger: Volume Up cycles the highlighted sentence on the
-  // current page. Fire on the PRESS edge and return early so this preempts
-  // detectPageTurn() (which also maps to Volume Up) — in this debug build Volume
-  // Up is highlight-only; page with the Left/Right bottom-edge buttons.
+  // Phase 1 debug triggers (A/B refresh comparison). Both advance the highlighted
+  // sentence on the current page; fire on PRESS and return early to preempt
+  // detectPageTurn() (which also maps to Volume Up/Down). Page with Left/Right.
+  //   Volume Up   -> partial windowed refresh (displayWindow)
+  //   Volume Down -> full-frame HALF refresh
   if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
-    hlCycleNext();
+    hlCycleNext(/*partial=*/true);
+    return;
+  }
+  if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+    hlCycleNext(/*partial=*/false);
     return;
   }
 #endif
@@ -1074,6 +1079,7 @@ void EpubReaderActivity::hlEnsurePageCache() {
   hlSentences.clear();
   hlCurrent = -1;
   hlSavedValid = false;  // page changed -> any clean snapshot is stale
+  hlPrevValid = false;   // and the previous highlight rect belongs to the old page
 
   int t, r, b, l;
   renderer.getOrientedViewableTRBL(&t, &r, &b, &l);
@@ -1170,22 +1176,78 @@ void EpubReaderActivity::hlDrawSentence(const SentenceSpan& span) {
   }
 }
 
-void EpubReaderActivity::hlRefresh(int ordinal) {
+bool EpubReaderActivity::hlSentenceBounds(const SentenceSpan& span, int& ox, int& oy, int& ow, int& oh) {
+  const int lineH = renderer.getLineHeight(hlFontId);
+  int x0 = std::numeric_limits<int>::max();
+  int x1 = std::numeric_limits<int>::min();
+  int y0 = std::numeric_limits<int>::max();
+  int y1 = std::numeric_limits<int>::min();
+  for (int li = span.firstLineIdx; li <= span.lastLineIdx; ++li) {
+    if (li < 0 || li >= static_cast<int>(hlLines.size()) || !hlLines[li].block) continue;
+    const auto& HL = hlLines[li];
+    const auto& words = HL.block->getWords();
+    const auto& xpos = HL.block->getWordXpos();
+    const auto& styles = HL.block->getWordStyles();
+    const int wordCount = static_cast<int>(words.size());
+    int w0 = (li == span.firstLineIdx) ? span.firstWordIdx : 0;
+    int w1 = (li == span.lastLineIdx) ? span.lastWordIdx : wordCount - 1;
+    w0 = std::max(0, w0);
+    w1 = std::min(wordCount - 1, w1);
+    const int lineTop = hlMarginTop + HL.yPos;
+    for (int wi = w0; wi <= w1; ++wi) {
+      if (hlIsBlankWord(words[wi])) continue;
+      const auto st = (wi < static_cast<int>(styles.size())) ? styles[wi] : EpdFontFamily::REGULAR;
+      const int wx = hlMarginLeft + HL.xPos + (wi < static_cast<int>(xpos.size()) ? xpos[wi] : 0);
+      const int ww = renderer.getTextWidth(hlFontId, words[wi].c_str(), st);
+      x0 = std::min(x0, wx);
+      x1 = std::max(x1, wx + ww);
+      y0 = std::min(y0, lineTop);
+      y1 = std::max(y1, lineTop + lineH);
+    }
+  }
+  if (x0 > x1 || y0 > y1) return false;
+  ox = x0;
+  oy = y0;
+  ow = x1 - x0;
+  oh = y1 - y0;
+  return true;
+}
+
+void EpubReaderActivity::hlRefresh(int ordinal, bool partial) {
   hlSnapshotCleanPage();
   if (!hlSavedValid) return;
   memcpy(renderer.getFrameBuffer(), hlSavedBuffer.get(), hlSavedBufferSize);  // clean slate
+
+  int nx = 0, ny = 0, nw = 0, nh = 0;
+  bool haveNew = false;
   if (ordinal >= 0 && ordinal < static_cast<int>(hlSentences.size())) {
     hlDrawSentence(hlSentences[ordinal]);
+    haveNew = hlSentenceBounds(hlSentences[ordinal], nx, ny, nw, nh);
   }
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);  // full-frame refresh; HALF = clean (same as page turns)
+
+  if (partial) {
+    // Clear the previously-shown highlight region, then paint the new one. Each
+    // displayWindow refreshes only that rect to match the (re-blitted) framebuffer.
+    if (hlPrevValid) renderer.displayWindow(hlPrevX, hlPrevY, hlPrevW, hlPrevH);
+    if (haveNew) renderer.displayWindow(nx, ny, nw, nh);
+  } else {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);  // full-frame, clean (same path as page turns)
+  }
+
+  hlPrevValid = haveNew;
+  hlPrevX = nx;
+  hlPrevY = ny;
+  hlPrevW = nw;
+  hlPrevH = nh;
 }
 
-void EpubReaderActivity::hlCycleNext() {
+void EpubReaderActivity::hlCycleNext(bool partial) {
   hlEnsurePageCache();
   if (hlSentences.empty()) return;
   hlCurrent = (hlCurrent + 1) % static_cast<int>(hlSentences.size());
-  LOG_INF("HL", "highlight sentence %d/%d", hlCurrent + 1, static_cast<int>(hlSentences.size()));
-  hlRefresh(hlCurrent);
+  LOG_INF("HL", "highlight sentence %d/%d (%s)", hlCurrent + 1, static_cast<int>(hlSentences.size()),
+          partial ? "partial" : "full");
+  hlRefresh(hlCurrent, partial);
 }
 #endif  // PHASE1_HIGHLIGHT_DEBUG
 
