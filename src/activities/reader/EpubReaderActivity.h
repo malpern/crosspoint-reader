@@ -10,6 +10,8 @@
 #include "ProgressMapper.h"
 #include "activities/Activity.h"
 
+class TextBlock;  // for Phase 1 highlight geometry (held by shared_ptr)
+
 class EpubReaderActivity final : public Activity {
   std::shared_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
@@ -55,6 +57,42 @@ class EpubReaderActivity final : public Activity {
   static constexpr int MAX_FOOTNOTE_DEPTH = 3;
   SavedPosition savedPositions[MAX_FOOTNOTE_DEPTH] = {};
   int footnoteDepth = 0;
+
+#ifdef PHASE1_HIGHLIGHT_DEBUG
+  // --- Phase 1: sentence-highlight primitive (debug-only, no networking) ---
+  // A sentence as a half-open-ish word range over the current page's laid-out
+  // lines (lastWordIdx inclusive). Never spans pages in Phase 1.
+  struct SentenceSpan {
+    int firstLineIdx;
+    int firstWordIdx;
+    int lastLineIdx;
+    int lastWordIdx;
+  };
+  // Lightweight retained geometry for one text line on the current page. The
+  // TextBlock is held by shared_ptr so it survives after the source Page is freed.
+  struct HighlightLine {
+    std::shared_ptr<TextBlock> block;
+    int16_t xPos;
+    int16_t yPos;
+  };
+  std::vector<HighlightLine> hlLines;       // current page's text lines, in order
+  std::vector<SentenceSpan> hlSentences;    // scanned sentences for current page
+  int hlPageIdx = -1;                       // section->currentPage the caches were built for
+  int hlCurrent = -1;                       // highlighted sentence ordinal (-1 = none)
+  int hlFontId = 0;
+  int hlMarginTop = 0;
+  int hlMarginLeft = 0;
+  std::unique_ptr<uint8_t[]> hlSavedBuffer; // clean-page framebuffer snapshot (lazy)
+  size_t hlSavedBufferSize = 0;
+  bool hlSavedValid = false;
+
+  void hlEnsurePageCache();                 // (re)load page geometry + scan sentences if stale
+  void hlScanSentences();                   // build hlSentences from hlLines (punctuation-based)
+  void hlSnapshotCleanPage();               // capture the clean framebuffer once per page
+  void hlDrawSentence(const SentenceSpan& span);  // fill rect + inverted text behind the sentence
+  void hlRefresh(int ordinal);              // refreshAfterHighlight: re-blit + draw + one FAST refresh
+  void hlCycleNext();                       // debug trigger: advance to the next sentence
+#endif
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);

@@ -238,6 +238,14 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+#ifdef PHASE1_HIGHLIGHT_DEBUG
+  // Phase 1 debug trigger: Up cycles the highlighted sentence on the current page.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+    hlCycleNext();
+    return;
+  }
+#endif
+
   // End-of-Book screen reached (currentSpineIndex == spine count) means the book is
   // finished. Two independent finished-book features key off this same condition.
   const bool atEndOfBook = currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount();
@@ -1013,6 +1021,171 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
   return EpubReaderUtils::saveProgress(*epub, spineIndex, currentPage, pageCount);
 }
+#ifdef PHASE1_HIGHLIGHT_DEBUG
+namespace {
+// True if the word is empty or only whitespace / em-space sentinels (U+2003).
+bool hlIsBlankWord(const std::string& w) {
+  for (size_t i = 0; i < w.size();) {
+    if (static_cast<unsigned char>(w[i]) == 0xE2 && i + 2 < w.size() &&
+        static_cast<unsigned char>(w[i + 1]) == 0x80 && static_cast<unsigned char>(w[i + 2]) == 0x83) {
+      i += 3;  // em-space sentinel
+      continue;
+    }
+    if (w[i] != ' ' && w[i] != '\t') return false;
+    i++;
+  }
+  return true;
+}
+
+// True if the word ends a sentence: terminal . ! ? or … (U+2026), after peeling
+// trailing closing quotes/brackets (ASCII and the common UTF-8 curly quotes).
+bool hlEndsSentence(const std::string& w) {
+  size_t end = w.size();
+  auto endsWithUtf8 = [&](const char* seq, size_t n) { return end >= n && memcmp(w.data() + end - n, seq, n) == 0; };
+  if (endsWithUtf8("\xE2\x80\xA6", 3)) return true;  // …
+  bool peeled = true;
+  while (peeled && end > 0) {
+    peeled = false;
+    const char c = w[end - 1];
+    if (c == '"' || c == '\'' || c == ')' || c == ']') {
+      end -= 1;
+      peeled = true;
+      continue;
+    }
+    if (endsWithUtf8("\xE2\x80\x9D", 3) || endsWithUtf8("\xE2\x80\x99", 3)) {  // ” ’
+      end -= 3;
+      peeled = true;
+    }
+  }
+  if (end == 0) return false;
+  const char c = w[end - 1];
+  return c == '.' || c == '!' || c == '?';
+}
+}  // namespace
+
+void EpubReaderActivity::hlEnsurePageCache() {
+  if (!section) return;
+  if (hlPageIdx == section->currentPage && !hlLines.empty()) return;  // cache still valid
+
+  hlLines.clear();
+  hlSentences.clear();
+  hlCurrent = -1;
+  hlSavedValid = false;  // page changed -> any clean snapshot is stale
+
+  int t, r, b, l;
+  renderer.getOrientedViewableTRBL(&t, &r, &b, &l);
+  hlMarginTop = t + SETTINGS.screenMargin;
+  hlMarginLeft = l + SETTINGS.screenMargin;
+  hlFontId = SETTINGS.getReaderFontId();
+
+  auto page = section->loadPageFromSectionFile();
+  if (!page) return;
+  for (const auto& el : page->elements) {
+    if (el->getTag() != TAG_PageLine) continue;
+    auto* line = static_cast<PageLine*>(el.get());
+    hlLines.push_back({line->getBlock(), el->xPos, el->yPos});
+  }
+  hlPageIdx = section->currentPage;
+  hlScanSentences();
+}
+
+void EpubReaderActivity::hlScanSentences() {
+  hlSentences.clear();
+  bool inSentence = false;
+  SentenceSpan cur{};
+  for (int li = 0; li < static_cast<int>(hlLines.size()); ++li) {
+    if (!hlLines[li].block) continue;
+    const auto& words = hlLines[li].block->getWords();
+    for (int wi = 0; wi < static_cast<int>(words.size()); ++wi) {
+      const std::string& w = words[wi];
+      if (!inSentence) {
+        if (hlIsBlankWord(w)) continue;  // don't start a sentence on whitespace
+        cur.firstLineIdx = li;
+        cur.firstWordIdx = wi;
+        inSentence = true;
+      }
+      cur.lastLineIdx = li;
+      cur.lastWordIdx = wi;
+      if (hlEndsSentence(w)) {
+        hlSentences.push_back(cur);
+        inSentence = false;
+      }
+    }
+  }
+  if (inSentence) hlSentences.push_back(cur);  // trailing partial sentence on the page
+}
+
+void EpubReaderActivity::hlSnapshotCleanPage() {
+  if (hlSavedValid) return;
+  if (!hlSavedBuffer) {
+    hlSavedBufferSize = renderer.getBufferSize();
+    hlSavedBuffer = makeUniqueNoThrow<uint8_t[]>(hlSavedBufferSize);
+    if (!hlSavedBuffer) {
+      LOG_ERR("HL", "snapshot malloc failed: %u bytes", static_cast<unsigned>(hlSavedBufferSize));
+      hlSavedBufferSize = 0;
+      return;
+    }
+  }
+  memcpy(hlSavedBuffer.get(), renderer.getFrameBuffer(), hlSavedBufferSize);
+  hlSavedValid = true;
+}
+
+void EpubReaderActivity::hlDrawSentence(const SentenceSpan& span) {
+  const int lineH = renderer.getLineHeight(hlFontId);
+  for (int li = span.firstLineIdx; li <= span.lastLineIdx; ++li) {
+    if (li < 0 || li >= static_cast<int>(hlLines.size()) || !hlLines[li].block) continue;
+    const auto& HL = hlLines[li];
+    const auto& words = HL.block->getWords();
+    const auto& xpos = HL.block->getWordXpos();
+    const auto& styles = HL.block->getWordStyles();
+    const int wordCount = static_cast<int>(words.size());
+    int w0 = (li == span.firstLineIdx) ? span.firstWordIdx : 0;
+    int w1 = (li == span.lastLineIdx) ? span.lastWordIdx : wordCount - 1;
+    w0 = std::max(0, w0);
+    w1 = std::min(wordCount - 1, w1);
+    const int lineTop = hlMarginTop + HL.yPos;
+
+    int rectX0 = std::numeric_limits<int>::max();
+    int rectX1 = std::numeric_limits<int>::min();
+    for (int wi = w0; wi <= w1; ++wi) {
+      if (hlIsBlankWord(words[wi])) continue;
+      const auto st = (wi < static_cast<int>(styles.size())) ? styles[wi] : EpdFontFamily::REGULAR;
+      const int wx = hlMarginLeft + HL.xPos + (wi < static_cast<int>(xpos.size()) ? xpos[wi] : 0);
+      const int ww = renderer.getTextWidth(hlFontId, words[wi].c_str(), st);
+      rectX0 = std::min(rectX0, wx);
+      rectX1 = std::max(rectX1, wx + ww);
+    }
+    if (rectX0 > rectX1) continue;  // line had only blanks in range
+
+    renderer.fillRect(rectX0, lineTop, rectX1 - rectX0, lineH, true);
+    for (int wi = w0; wi <= w1; ++wi) {
+      if (hlIsBlankWord(words[wi])) continue;
+      const auto st = (wi < static_cast<int>(styles.size())) ? styles[wi] : EpdFontFamily::REGULAR;
+      const int wx = hlMarginLeft + HL.xPos + (wi < static_cast<int>(xpos.size()) ? xpos[wi] : 0);
+      renderer.drawText(hlFontId, wx, lineTop, words[wi].c_str(), /*black=*/false, st);
+    }
+  }
+}
+
+void EpubReaderActivity::hlRefresh(int ordinal) {
+  hlSnapshotCleanPage();
+  if (!hlSavedValid) return;
+  memcpy(renderer.getFrameBuffer(), hlSavedBuffer.get(), hlSavedBufferSize);  // clean slate
+  if (ordinal >= 0 && ordinal < static_cast<int>(hlSentences.size())) {
+    hlDrawSentence(hlSentences[ordinal]);
+  }
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);  // committed full-frame fast refresh (spec §5)
+}
+
+void EpubReaderActivity::hlCycleNext() {
+  hlEnsurePageCache();
+  if (hlSentences.empty()) return;
+  hlCurrent = (hlCurrent + 1) % static_cast<int>(hlSentences.size());
+  LOG_INF("HL", "highlight sentence %d/%d", hlCurrent + 1, static_cast<int>(hlSentences.size()));
+  hlRefresh(hlCurrent);
+}
+#endif  // PHASE1_HIGHLIGHT_DEBUG
+
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
