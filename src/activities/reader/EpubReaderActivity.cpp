@@ -239,8 +239,11 @@ void EpubReaderActivity::loop() {
   }
 
 #ifdef PHASE1_HIGHLIGHT_DEBUG
-  // Phase 1 debug trigger: Up cycles the highlighted sentence on the current page.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
+  // Phase 1 debug trigger: Volume Up cycles the highlighted sentence on the
+  // current page. Fire on the PRESS edge and return early so this preempts
+  // detectPageTurn() (which also maps to Volume Up) — in this debug build Volume
+  // Up is highlight-only; page with the Left/Right bottom-edge buttons.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     hlCycleNext();
     return;
   }
@@ -1174,7 +1177,7 @@ void EpubReaderActivity::hlRefresh(int ordinal) {
   if (ordinal >= 0 && ordinal < static_cast<int>(hlSentences.size())) {
     hlDrawSentence(hlSentences[ordinal]);
   }
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);  // committed full-frame fast refresh (spec §5)
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);  // full-frame refresh; HALF = clean (same as page turns)
 }
 
 void EpubReaderActivity::hlCycleNext() {
