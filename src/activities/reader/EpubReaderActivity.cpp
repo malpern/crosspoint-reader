@@ -1213,6 +1213,26 @@ void EpubReaderActivity::hlCycleNext() {
 #endif  // PHASE1_HIGHLIGHT_DEBUG
 
 #ifdef PHASE2_REMOTE_DEBUG
+int EpubReaderActivity::remoteSentenceCount() {
+  hlEnsurePageCache();
+  return static_cast<int>(hlSentences.size());
+}
+
+bool EpubReaderActivity::remoteHighlightSentence(int ordinal) {
+  hlEnsurePageCache();
+  if (hlSentences.empty()) return false;
+  if (ordinal < 0) ordinal = 0;
+  if (ordinal >= static_cast<int>(hlSentences.size())) ordinal = static_cast<int>(hlSentences.size()) - 1;
+  // The session-start status screen (or a stale snapshot) may not be the book
+  // page; re-render the clean page synchronously so the snapshot is correct.
+  if (!hlSavedValid) {
+    requestUpdateAndWait();
+  }
+  hlCurrent = ordinal;
+  hlRefresh(ordinal);  // snapshots clean page (lazy), draws highlight, HALF refresh
+  return true;
+}
+
 void EpubReaderActivity::drawRemoteStatus(const char* line1, const char* line2) {
   renderer.clearScreen();
   const int cy = renderer.getScreenHeight() / 2;

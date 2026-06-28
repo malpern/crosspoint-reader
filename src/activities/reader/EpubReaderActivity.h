@@ -139,6 +139,12 @@ class EpubReaderActivity final : public Activity {
 #ifdef PHASE2_REMOTE_DEBUG
   // Keep the reader awake while a remote session holds Wi-Fi up.
   bool preventAutoSleep() override { return remote_ && remote_->isActive(); }
+  // Driven by RemoteReaderController over the WebSocket:
+  // highlight sentence `ordinal` (0-based) on the current page; returns false if
+  // the page has no sentences. Re-renders the clean page first if needed.
+  bool remoteHighlightSentence(int ordinal);
+  // Number of detected sentences on the current page (ensures the cache first).
+  int remoteSentenceCount();
 #endif
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;

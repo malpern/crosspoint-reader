@@ -109,8 +109,6 @@ void RemoteReaderController::stop() {
 }
 
 void RemoteReaderController::handleText(uint8_t num, const uint8_t* payload, size_t length) {
-  // 2a spike: just prove the channel works — ping/pong + echo. Command dispatch
-  // (highlight/goto/...) lands in 2b.
   JsonDocument doc;
   if (deserializeJson(doc, payload, length)) {
     ws_->sendTXT(num, "{\"evt\":\"error\",\"msg\":\"bad json\"}");
@@ -118,10 +116,30 @@ void RemoteReaderController::handleText(uint8_t num, const uint8_t* payload, siz
   }
   const char* cmd = doc["cmd"] | "";
   LOG_INF("REMOTE", "cmd='%s'", cmd);
+
   if (strcmp(cmd, "ping") == 0) {
     ws_->sendTXT(num, "{\"evt\":\"pong\"}");
+  } else if (strcmp(cmd, "count") == 0) {
+    const int n = reader_.remoteSentenceCount();
+    JsonDocument out;
+    out["evt"] = "count";
+    out["n"] = n;
+    String s;
+    serializeJson(out, s);
+    ws_->sendTXT(num, s);
+  } else if (strcmp(cmd, "highlight") == 0) {
+    const int i = doc["i"] | 0;
+    const bool ok = reader_.remoteHighlightSentence(i);
+    JsonDocument out;
+    out["evt"] = "hl";
+    out["i"] = i;
+    out["n"] = reader_.remoteSentenceCount();
+    out["ok"] = ok;
+    String s;
+    serializeJson(out, s);
+    ws_->sendTXT(num, s);
   } else {
-    String out = String("{\"evt\":\"echo\",\"cmd\":\"") + cmd + "\"}";
+    String out = String("{\"evt\":\"error\",\"msg\":\"unknown cmd: ") + cmd + "\"}";
     ws_->sendTXT(num, out);
   }
 }
