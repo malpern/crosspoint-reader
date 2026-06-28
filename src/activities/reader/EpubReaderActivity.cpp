@@ -32,6 +32,10 @@
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
+#include "fontIds.h"
+#ifdef PHASE2_REMOTE_DEBUG
+#include "RemoteReaderController.h"
+#endif
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
@@ -206,6 +210,14 @@ void EpubReaderActivity::onEnter() {
 void EpubReaderActivity::onExit() {
   Activity::onExit();
 
+#ifdef PHASE2_REMOTE_DEBUG
+  // Tear down any active remote session (Wi-Fi + WebSocket) before leaving.
+  if (remote_) {
+    remote_->stop();
+    remote_.reset();
+  }
+#endif
+
   // Reset orientation back to portrait for the rest of the UI
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
@@ -238,7 +250,18 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-#ifdef PHASE1_HIGHLIGHT_DEBUG
+#if defined(PHASE2_REMOTE_DEBUG)
+  // Phase 2 debug trigger: Volume Up starts/stops the remote session (Wi-Fi +
+  // WebSocket). Fire on PRESS and return so it preempts detectPageTurn(); pages
+  // turn with Left/Right. While active, pump the WebSocket each loop.
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+    toggleRemoteSession();
+    return;
+  }
+  if (remote_ && remote_->isActive()) {
+    remote_->update();
+  }
+#elif defined(PHASE1_HIGHLIGHT_DEBUG)
   // Phase 1 debug trigger: Volume Up cycles the highlighted sentence on the
   // current page. Fire on the PRESS edge and return early so this preempts
   // detectPageTurn() (which also maps to Volume Up) — in this debug build Volume
@@ -1188,6 +1211,34 @@ void EpubReaderActivity::hlCycleNext() {
   hlRefresh(hlCurrent);
 }
 #endif  // PHASE1_HIGHLIGHT_DEBUG
+
+#ifdef PHASE2_REMOTE_DEBUG
+void EpubReaderActivity::drawRemoteStatus(const char* line1, const char* line2) {
+  renderer.clearScreen();
+  const int cy = renderer.getScreenHeight() / 2;
+  renderer.drawCenteredText(NOTOSANS_16_FONT_ID, cy - 24, line1);
+  if (line2 && line2[0]) renderer.drawCenteredText(NOTOSANS_14_FONT_ID, cy + 8, line2);
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+}
+
+void EpubReaderActivity::toggleRemoteSession() {
+  if (remote_ && remote_->isActive()) {
+    remote_->stop();
+    remote_.reset();
+    requestUpdate(true);  // redraw the page
+    return;
+  }
+  drawRemoteStatus("Remote session", "Connecting Wi-Fi...");
+  remote_.reset(new RemoteReaderController(*this));
+  if (remote_->begin()) {
+    const std::string l2 = "ws://" + remote_->ip() + ":81  (crosspoint.local)";
+    drawRemoteStatus("Remote session active", l2.c_str());
+  } else {
+    drawRemoteStatus("Remote session failed", remote_->status().c_str());
+    remote_.reset();
+  }
+}
+#endif  // PHASE2_REMOTE_DEBUG
 
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,

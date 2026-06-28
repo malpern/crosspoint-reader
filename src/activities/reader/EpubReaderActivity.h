@@ -9,6 +9,11 @@
 #include "EpubReaderMenuActivity.h"
 #include "ProgressMapper.h"
 #include "activities/Activity.h"
+#ifdef PHASE2_REMOTE_DEBUG
+#include <memory>
+
+#include "RemoteReaderController.h"
+#endif
 
 class TextBlock;  // for Phase 1 highlight geometry (held by shared_ptr)
 
@@ -94,6 +99,13 @@ class EpubReaderActivity final : public Activity {
   void hlCycleNext();                       // debug trigger: advance to the next sentence
 #endif
 
+#ifdef PHASE2_REMOTE_DEBUG
+  // --- Phase 2: remote session (Wi-Fi + WebSocket inside the reader) ---
+  std::unique_ptr<RemoteReaderController> remote_;
+  void toggleRemoteSession();               // debug trigger: start/stop the remote session
+  void drawRemoteStatus(const char* line1, const char* line2);  // full-screen status (IP, etc.)
+#endif
+
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void renderStatusBar() const;
@@ -124,6 +136,10 @@ class EpubReaderActivity final : public Activity {
   void loop() override;
   void render(RenderLock&& lock) override;
   bool isReaderActivity() const override { return true; }
+#ifdef PHASE2_REMOTE_DEBUG
+  // Keep the reader awake while a remote session holds Wi-Fi up.
+  bool preventAutoSleep() override { return remote_ && remote_->isActive(); }
+#endif
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;
 };
