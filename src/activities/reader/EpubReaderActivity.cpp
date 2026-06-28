@@ -1260,7 +1260,96 @@ bool EpubReaderActivity::remoteGotoParagraph(int spine, int para) {
     pendingParagraphJump = static_cast<uint16_t>(para);
   }
   requestUpdateAndWait();  // render task resolves paragraph -> page and paints
+  if (para >= 1) remoteSeekParagraph(para);  // correct the LUT's ~1-page-early landing
   return true;
+}
+
+bool EpubReaderActivity::remoteSeekParagraph(int para) {
+  for (int tries = 0; tries < 5; ++tries) {
+    hlEnsurePageCache();
+    for (const auto& l : hlLines) {
+      if (l.block && l.block->getParagraphIndex() == static_cast<uint16_t>(para)) return true;
+    }
+    if (!section || section->currentPage >= section->pageCount - 1) return false;
+    {
+      RenderLock lock(*this);
+      section->currentPage += 1;
+    }
+    requestUpdateAndWait();
+  }
+  return false;
+}
+
+bool EpubReaderActivity::remoteHighlightParaSentence(int spine, int para, int sent) {
+  if (para < 1) para = 1;
+  // 1) Navigate so paragraph `para` is on screen (renders the clean page).
+  remoteGotoParagraph(spine, para);
+  // 2) Build line geometry for the now-current page.
+  hlEnsurePageCache();
+  if (hlLines.empty()) return false;
+
+  // 3) Segment this paragraph's sentences from its lines on this page (same rule
+  //    as the device's scanner). Spans index into hlLines.
+  std::vector<SentenceSpan> paraSentences;
+  bool inSentence = false;
+  SentenceSpan cur{};
+  for (int li = 0; li < static_cast<int>(hlLines.size()); ++li) {
+    if (!hlLines[li].block || hlLines[li].block->getParagraphIndex() != static_cast<uint16_t>(para)) continue;
+    const auto& words = hlLines[li].block->getWords();
+    for (int wi = 0; wi < static_cast<int>(words.size()); ++wi) {
+      if (!inSentence) {
+        if (hlIsBlankWord(words[wi])) continue;
+        cur.firstLineIdx = li;
+        cur.firstWordIdx = wi;
+        inSentence = true;
+      }
+      cur.lastLineIdx = li;
+      cur.lastWordIdx = wi;
+      if (hlEndsSentence(words[wi])) {
+        paraSentences.push_back(cur);
+        inSentence = false;
+      }
+    }
+  }
+  if (inSentence) paraSentences.push_back(cur);
+  if (paraSentences.empty()) return false;
+  if (sent < 0) sent = 0;
+  if (sent >= static_cast<int>(paraSentences.size())) sent = static_cast<int>(paraSentences.size()) - 1;
+
+  // 4) Render: clean page + the highlighted sentence (cached-framebuffer path).
+  hlSnapshotCleanPage();
+  if (!hlSavedValid) return false;
+  memcpy(renderer.getFrameBuffer(), hlSavedBuffer.get(), hlSavedBufferSize);
+  hlDrawSentence(paraSentences[sent]);
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  hlCurrent = -1;  // page-relative cycle state no longer applies
+  LOG_INF("HL", "remote highlight spine=%d para=%d sent=%d/%d", spine, para, sent + 1,
+          static_cast<int>(paraSentences.size()));
+  return true;
+}
+
+std::string EpubReaderActivity::remoteDiag(int para) {
+  if (para < 1) para = 1;
+  const int pageForPara =
+      section ? static_cast<int>(section->getPageForParagraphIndex(static_cast<uint16_t>(para)).value_or(0xFFFF)) : -1;
+  remoteGotoParagraph(-1, para);  // land where the lookup says paragraph `para` is
+  hlEnsurePageCache();
+  // Distinct paragraph indices present on the landed page, in order.
+  std::string paras;
+  int last = -1;
+  for (const auto& l : hlLines) {
+    if (!l.block) continue;
+    const int p = l.block->getParagraphIndex();
+    if (p != last) {
+      paras += std::to_string(p);
+      paras += ",";
+      last = p;
+    }
+  }
+  char buf[200];
+  snprintf(buf, sizeof(buf), "spine=%d page=%d/%d lookup(para %d)->page %d  parasOnPage=[%s]", currentSpineIndex,
+           section ? section->currentPage : -1, section ? section->pageCount : -1, para, pageForPara, paras.c_str());
+  return std::string(buf);
 }
 
 void EpubReaderActivity::drawRemoteStatus(const char* line1, const char* line2) {

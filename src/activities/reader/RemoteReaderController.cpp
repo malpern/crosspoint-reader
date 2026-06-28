@@ -127,6 +127,15 @@ void RemoteReaderController::handleText(uint8_t num, const uint8_t* payload, siz
     String s;
     serializeJson(out, s);
     ws_->sendTXT(num, s);
+  } else if (strcmp(cmd, "diag") == 0) {
+    const int para = doc["para"] | 1;
+    const std::string info = reader_.remoteDiag(para);
+    JsonDocument out;
+    out["evt"] = "diag";
+    out["info"] = info;
+    String s;
+    serializeJson(out, s);
+    ws_->sendTXT(num, s);
   } else if (strcmp(cmd, "goto") == 0) {
     // Page-follow: turn to the page containing paragraph `para` (<p> ordinal) of
     // `spine` (-1 = current spine). The headline Phase 3 sync, no highlight.
@@ -142,16 +151,34 @@ void RemoteReaderController::handleText(uint8_t num, const uint8_t* payload, siz
     serializeJson(out, s);
     ws_->sendTXT(num, s);
   } else if (strcmp(cmd, "highlight") == 0) {
-    const int i = doc["i"] | 0;
-    const bool ok = reader_.remoteHighlightSentence(i);
-    JsonDocument out;
-    out["evt"] = "hl";
-    out["i"] = i;
-    out["n"] = reader_.remoteSentenceCount();
-    out["ok"] = ok;
-    String s;
-    serializeJson(out, s);
-    ws_->sendTXT(num, s);
+    if (!doc["para"].isNull()) {
+      // Phase 3 precise highlight: (spine, para, sent) [+ optional text].
+      const int spine = doc["spine"] | -1;
+      const int para = doc["para"] | 1;
+      const int sent = doc["sent"] | 0;
+      const bool ok = reader_.remoteHighlightParaSentence(spine, para, sent);
+      JsonDocument out;
+      out["evt"] = "hl";
+      out["spine"] = spine;
+      out["para"] = para;
+      out["sent"] = sent;
+      out["ok"] = ok;
+      String s;
+      serializeJson(out, s);
+      ws_->sendTXT(num, s);
+    } else {
+      // Test-only page-relative ordinal (kept for x4client.py).
+      const int i = doc["i"] | 0;
+      const bool ok = reader_.remoteHighlightSentence(i);
+      JsonDocument out;
+      out["evt"] = "hl";
+      out["i"] = i;
+      out["n"] = reader_.remoteSentenceCount();
+      out["ok"] = ok;
+      String s;
+      serializeJson(out, s);
+      ws_->sendTXT(num, s);
+    }
   } else {
     String out = String("{\"evt\":\"error\",\"msg\":\"unknown cmd: ") + cmd + "\"}";
     ws_->sendTXT(num, out);

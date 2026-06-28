@@ -107,6 +107,9 @@ class EpubReaderActivity final : public Activity {
   std::optional<uint16_t> pendingParagraphJump;
   void toggleRemoteSession();               // debug trigger: start/stop the remote session
   void drawRemoteStatus(const char* line1, const char* line2);  // full-screen status (IP, etc.)
+  // The paragraph->page LUT lands ~1 page early; after the estimate, advance pages
+  // until paragraph `para` is actually present (line stamps are correct). True if found.
+  bool remoteSeekParagraph(int para);
 #endif
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
@@ -151,6 +154,15 @@ class EpubReaderActivity final : public Activity {
   // Page-follow: navigate so the page containing paragraph `para` (<p> ordinal,
   // 1-based) of `spine` is shown. spine < 0 means "current spine". No highlight.
   bool remoteGotoParagraph(int spine, int para);
+  // Precise highlight: navigate to paragraph `para` (<p> ordinal, 1-based) of
+  // `spine` (-1 = current), then highlight sentence `sent` (0-based) within that
+  // paragraph using the shared punctuation rule. Returns false if not found on the
+  // landed page. (v1: a paragraph spanning pages only resolves sentences on its
+  // start page.)
+  bool remoteHighlightParaSentence(int spine, int para, int sent);
+  // Debug: after landing on paragraph `para`'s page, report the page + the distinct
+  // paragraph indices actually present on it (to diagnose page-lookup alignment).
+  std::string remoteDiag(int para);
 #endif
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;

@@ -204,6 +204,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
       const auto style = currentTextBlock->getBlockStyle();
       currentTextBlock->setBlockStyle(style.getCombinedBlockStyle(blockStyle, BlockStyle::CombineAxis::Vertical));
 
+      currentTextBlock->setParagraphIndex(xpathParagraphIndex);  // reused empty block adopts current <p>
       flushPendingAnchor();
       return;
     }
@@ -214,6 +215,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   // block is flushed so the chapter starts on a fresh page.
   flushPendingAnchor();
   currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, focusReadingEnabled, blockStyle));
+  currentTextBlock->setParagraphIndex(xpathParagraphIndex);  // 1-based <p> ordinal for this block's lines
   wordsExtractedInBlock = 0;
 }
 

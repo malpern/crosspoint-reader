@@ -115,6 +115,9 @@ bool TextBlock::serialize(HalFile& file) const {
   serialization::writePod(file, blockStyle.isRtl);
   serialization::writePod(file, blockStyle.directionDefined);
 
+  // Paragraph index (1-based <p> ordinal) for sentence highlighting.
+  serialization::writePod(file, paragraphIndex);
+
   return true;
 }
 
@@ -170,7 +173,12 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
   serialization::readPod(file, blockStyle.isRtl);
   serialization::readPod(file, blockStyle.directionDefined);
 
-  return std::unique_ptr<TextBlock>(new TextBlock(std::move(words), std::move(wordXpos), std::move(wordStyles),
-                                                  std::move(wordFocusBoundary), std::move(wordFocusSuffixX),
-                                                  blockStyle));
+  uint16_t paragraphIndex = 0;
+  serialization::readPod(file, paragraphIndex);
+
+  auto block = std::unique_ptr<TextBlock>(new TextBlock(std::move(words), std::move(wordXpos), std::move(wordStyles),
+                                                        std::move(wordFocusBoundary), std::move(wordFocusSuffixX),
+                                                        blockStyle));
+  block->setParagraphIndex(paragraphIndex);
+  return block;
 }

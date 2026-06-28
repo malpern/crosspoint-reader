@@ -1133,8 +1133,10 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
   }
 
   if (!lineHasFocusSplit) {
-    processLine(std::make_shared<TextBlock>(std::move(lineWords), std::move(lineXPos), std::move(lineWordStyles),
-                                            std::vector<uint8_t>{}, std::vector<uint16_t>{}, blockStyle));
+    auto block = std::make_shared<TextBlock>(std::move(lineWords), std::move(lineXPos), std::move(lineWordStyles),
+                                             std::vector<uint8_t>{}, std::vector<uint16_t>{}, blockStyle);
+    block->setParagraphIndex(paragraphIndex_);
+    processLine(std::move(block));
     return;
   }
 
@@ -1179,6 +1181,8 @@ void ParsedText::extractLine(const size_t breakIndex, const int pageWidth, const
     }
   }
 
-  processLine(std::make_shared<TextBlock>(std::move(outWords), std::move(outXPos), std::move(outStyles),
-                                          std::move(outBoundaries), std::move(outSuffixX), blockStyle));
+  auto block = std::make_shared<TextBlock>(std::move(outWords), std::move(outXPos), std::move(outStyles),
+                                           std::move(outBoundaries), std::move(outSuffixX), blockStyle);
+  block->setParagraphIndex(paragraphIndex_);
+  processLine(std::move(block));
 }

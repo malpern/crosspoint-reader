@@ -27,6 +27,7 @@ class TextBlock final : public Block {
   // Empty in lockstep with wordFocusBoundary.
   std::vector<uint16_t> wordFocusSuffixX;
   BlockStyle blockStyle;
+  uint16_t paragraphIndex = 0;  // 1-based <p> ordinal this line belongs to (0 = unknown)
 
  public:
   explicit TextBlock(std::vector<std::string> words, std::vector<int16_t> word_xpos,
@@ -48,6 +49,10 @@ class TextBlock final : public Block {
   // Per-word render style; index-aligned with getWords(). May be shorter/empty on
   // lines with no style runs — callers must bounds-check before indexing.
   const std::vector<EpdFontFamily::Style>& getWordStyles() const { return wordStyles; }
+  // 1-based ordinal of the source <p> element this line belongs to (0 = none/unknown).
+  // Used for phone-driven sentence highlighting; serialized in the Section cache.
+  void setParagraphIndex(uint16_t p) { paragraphIndex = p; }
+  uint16_t getParagraphIndex() const { return paragraphIndex; }
   bool isEmpty() override { return words.empty(); }
   size_t wordCount() const { return words.size(); }
   // given a renderer works out where to break the words into lines
