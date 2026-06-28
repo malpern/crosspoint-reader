@@ -127,6 +127,20 @@ void RemoteReaderController::handleText(uint8_t num, const uint8_t* payload, siz
     String s;
     serializeJson(out, s);
     ws_->sendTXT(num, s);
+  } else if (strcmp(cmd, "goto") == 0) {
+    // Page-follow: turn to the page containing paragraph `para` (<p> ordinal) of
+    // `spine` (-1 = current spine). The headline Phase 3 sync, no highlight.
+    const int spine = doc["spine"] | -1;
+    const int para = doc["para"] | 0;
+    const bool ok = reader_.remoteGotoParagraph(spine, para);
+    JsonDocument out;
+    out["evt"] = "goto";
+    out["spine"] = spine;
+    out["para"] = para;
+    out["ok"] = ok;
+    String s;
+    serializeJson(out, s);
+    ws_->sendTXT(num, s);
   } else if (strcmp(cmd, "highlight") == 0) {
     const int i = doc["i"] | 0;
     const bool ok = reader_.remoteHighlightSentence(i);

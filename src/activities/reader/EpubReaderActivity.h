@@ -102,6 +102,9 @@ class EpubReaderActivity final : public Activity {
 #ifdef PHASE2_REMOTE_DEBUG
   // --- Phase 2: remote session (Wi-Fi + WebSocket inside the reader) ---
   std::unique_ptr<RemoteReaderController> remote_;
+  // Phase 3 page-follow: a paragraph (<p> ordinal) to navigate to, resolved to a
+  // page once the section is loaded (works same-spine and cross-spine).
+  std::optional<uint16_t> pendingParagraphJump;
   void toggleRemoteSession();               // debug trigger: start/stop the remote session
   void drawRemoteStatus(const char* line1, const char* line2);  // full-screen status (IP, etc.)
 #endif
@@ -145,6 +148,9 @@ class EpubReaderActivity final : public Activity {
   bool remoteHighlightSentence(int ordinal);
   // Number of detected sentences on the current page (ensures the cache first).
   int remoteSentenceCount();
+  // Page-follow: navigate so the page containing paragraph `para` (<p> ordinal,
+  // 1-based) of `spine` is shown. spine < 0 means "current spine". No highlight.
+  bool remoteGotoParagraph(int spine, int para);
 #endif
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;

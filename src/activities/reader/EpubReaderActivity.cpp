@@ -953,6 +953,19 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     }
   }
 
+#ifdef PHASE2_REMOTE_DEBUG
+  // Phase 3 page-follow: now that the section is loaded, resolve a pending
+  // paragraph jump (<p> ordinal) to its page. Runs whether or not the section was
+  // just reloaded, so same-spine jumps work too.
+  if (pendingParagraphJump.has_value() && section) {
+    if (const auto page = section->getPageForParagraphIndex(*pendingParagraphJump)) {
+      section->currentPage = *page;
+      LOG_DBG("ERS", "Remote: paragraph %u -> page %d", *pendingParagraphJump, *page);
+    }
+    pendingParagraphJump.reset();
+  }
+#endif
+
   renderer.clearScreen();
 
   if (section->pageCount == 0) {
@@ -1230,6 +1243,23 @@ bool EpubReaderActivity::remoteHighlightSentence(int ordinal) {
   }
   hlCurrent = ordinal;
   hlRefresh(ordinal);  // snapshots clean page (lazy), draws highlight, HALF refresh
+  return true;
+}
+
+bool EpubReaderActivity::remoteGotoParagraph(int spine, int para) {
+  if (!epub) return false;
+  if (para < 0) para = 0;
+  const int spineCount = epub->getSpineItemsCount();
+  {
+    RenderLock lock(*this);
+    if (spine >= 0 && spine < spineCount && spine != currentSpineIndex) {
+      currentSpineIndex = spine;
+      nextPageNumber = 0;
+      section.reset();  // force reload of the target spine
+    }
+    pendingParagraphJump = static_cast<uint16_t>(para);
+  }
+  requestUpdateAndWait();  // render task resolves paragraph -> page and paints
   return true;
 }
 
