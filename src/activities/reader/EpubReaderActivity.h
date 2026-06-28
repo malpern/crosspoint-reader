@@ -106,10 +106,23 @@ class EpubReaderActivity final : public Activity {
   // page once the section is loaded (works same-spine and cross-spine).
   std::optional<uint16_t> pendingParagraphJump;
   void toggleRemoteSession();               // debug trigger: start/stop the remote session
-  void drawRemoteStatus(const char* line1, const char* line2);  // full-screen status (IP, etc.)
+  void drawRemoteStatus(const char* line1, const char* line2);  // plain centered status (e.g. "Connecting…")
+  void drawRemoteResult(bool ok, const char* title, const char* subtitle);  // badge + title + subtitle
+  void drawWifiGlyph(int cx, int cyDot) const;  // small Wi-Fi fan (dot + 3 arcs) at (cx, dot)
+  void drawRemoteIndicatorIfActive() const;     // top-right session indicator, drawn each render
   // The paragraph->page LUT lands ~1 page early; after the estimate, advance pages
   // until paragraph `para` is actually present (line stamps are correct). True if found.
   bool remoteSeekParagraph(int para);
+  // Emit a {"evt":"pos",...} when the user navigates ON the X4 (page/spine changed
+  // since last report). Phone-driven navigation updates the baseline so it doesn't echo.
+  void remoteReportPositionIfChanged();
+  int lastReportedSpine_ = -1;
+  int lastReportedPage_ = -1;
+  // After local (user) navigation, ignore inbound goto/highlight until this time, so
+  // an in-flight phone command can't snap the page back before the phone hears `pos`.
+  unsigned long remoteSuppressUntil_ = 0;
+  // While true, a failure/status message is held on screen until any button dismisses it.
+  bool remoteAwaitDismiss_ = false;
 #endif
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
@@ -163,6 +176,11 @@ class EpubReaderActivity final : public Activity {
   // Debug: after landing on paragraph `para`'s page, report the page + the distinct
   // paragraph indices actually present on it (to diagnose page-lookup alignment).
   std::string remoteDiag(int para);
+  // Current reading position for position-sync: spine index, top-of-page paragraph
+  // (<p> ordinal, from correct line stamps), and the book's file path.
+  int remoteCurrentSpine() const { return currentSpineIndex; }
+  int remoteCurrentParagraph();
+  std::string remoteFilePath() const;
 #endif
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;

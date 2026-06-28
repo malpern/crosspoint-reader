@@ -69,10 +69,19 @@ bool RemoteReaderController::begin() {
   ws_.reset(new WebSocketsServer(kRemotePort));
   ws_->onEvent([this](uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
-      case WStype_CONNECTED:
+      case WStype_CONNECTED: {
         LOG_INF("REMOTE", "client %u connected", num);
-        ws_->sendTXT(num, "{\"evt\":\"ready\"}");
+        // Hand the phone our current position so it can reconcile against the cloud.
+        JsonDocument out;
+        out["evt"] = "ready";
+        out["spine"] = reader_.remoteCurrentSpine();
+        out["para"] = reader_.remoteCurrentParagraph();
+        out["file"] = reader_.remoteFilePath();
+        String s;
+        serializeJson(out, s);
+        ws_->sendTXT(num, s);
         break;
+      }
       case WStype_TEXT:
         handleText(num, payload, length);
         break;
@@ -92,6 +101,17 @@ bool RemoteReaderController::begin() {
 
 void RemoteReaderController::update() {
   if (active_ && ws_) ws_->loop();
+}
+
+void RemoteReaderController::sendPos(int spine, int para) {
+  if (!active_ || !ws_) return;
+  JsonDocument out;
+  out["evt"] = "pos";
+  out["spine"] = spine;
+  out["para"] = para;
+  String s;
+  serializeJson(out, s);
+  ws_->broadcastTXT(s);
 }
 
 void RemoteReaderController::stop() {

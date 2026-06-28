@@ -13,6 +13,7 @@
 #include <esp_system.h>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -251,6 +252,16 @@ void EpubReaderActivity::loop() {
   }
 
 #if defined(PHASE2_REMOTE_DEBUG)
+  // A held failure/status message stays up until any button dismisses it -> book.
+  if (remoteAwaitDismiss_) {
+    using B = MappedInputManager::Button;
+    if (mappedInput.wasReleased(B::Up) || mappedInput.wasReleased(B::Down) || mappedInput.wasReleased(B::Left) ||
+        mappedInput.wasReleased(B::Right) || mappedInput.wasReleased(B::Confirm) || mappedInput.wasReleased(B::Back)) {
+      remoteAwaitDismiss_ = false;
+      requestUpdate(true);  // return to the book
+    }
+    return;
+  }
   // Phase 2 debug trigger: Volume Up starts/stops the remote session (Wi-Fi +
   // WebSocket). Fire on PRESS and return so it preempts detectPageTurn(); pages
   // turn with Left/Right. While active, pump the WebSocket each loop.
@@ -260,6 +271,7 @@ void EpubReaderActivity::loop() {
   }
   if (remote_ && remote_->isActive()) {
     remote_->update();
+    remoteReportPositionIfChanged();  // emit `pos` when the user turns pages on the X4
   }
 #elif defined(PHASE1_HIGHLIGHT_DEBUG)
   // Phase 1 debug trigger: Volume Up cycles the highlighted sentence on the
@@ -1248,6 +1260,7 @@ bool EpubReaderActivity::remoteHighlightSentence(int ordinal) {
 
 bool EpubReaderActivity::remoteGotoParagraph(int spine, int para) {
   if (!epub) return false;
+  if (millis() < remoteSuppressUntil_) return false;  // user is in control; ignore phone nav
   if (para < 0) para = 0;
   const int spineCount = epub->getSpineItemsCount();
   {
@@ -1261,7 +1274,31 @@ bool EpubReaderActivity::remoteGotoParagraph(int spine, int para) {
   }
   requestUpdateAndWait();  // render task resolves paragraph -> page and paints
   if (para >= 1) remoteSeekParagraph(para);  // correct the LUT's ~1-page-early landing
+  // Phone-driven navigation: update the baseline so it isn't echoed back as a `pos`.
+  lastReportedSpine_ = currentSpineIndex;
+  lastReportedPage_ = section ? section->currentPage : -1;
   return true;
+}
+
+int EpubReaderActivity::remoteCurrentParagraph() {
+  hlEnsurePageCache();
+  for (const auto& l : hlLines) {
+    if (l.block) return l.block->getParagraphIndex();
+  }
+  return 0;
+}
+
+std::string EpubReaderActivity::remoteFilePath() const { return epub ? epub->getPath() : std::string(); }
+
+void EpubReaderActivity::remoteReportPositionIfChanged() {
+  if (!remote_ || !remote_->isActive() || !section) return;
+  if (currentSpineIndex == lastReportedSpine_ && section->currentPage == lastReportedPage_) return;
+  lastReportedSpine_ = currentSpineIndex;
+  lastReportedPage_ = section->currentPage;
+  // User grabbed control: lock out inbound nav briefly so an in-flight phone
+  // command can't snap the page back before the phone hears `pos` and stops.
+  remoteSuppressUntil_ = millis() + 1000;
+  remote_->sendPos(currentSpineIndex, remoteCurrentParagraph());
 }
 
 bool EpubReaderActivity::remoteSeekParagraph(int para) {
@@ -1281,6 +1318,7 @@ bool EpubReaderActivity::remoteSeekParagraph(int para) {
 }
 
 bool EpubReaderActivity::remoteHighlightParaSentence(int spine, int para, int sent) {
+  if (millis() < remoteSuppressUntil_) return false;  // user is in control; ignore phone nav
   if (para < 1) para = 1;
   // 1) Navigate so paragraph `para` is on screen (renders the clean page).
   remoteGotoParagraph(spine, para);
@@ -1360,6 +1398,76 @@ void EpubReaderActivity::drawRemoteStatus(const char* line1, const char* line2) 
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
 
+void EpubReaderActivity::drawWifiGlyph(int cx, int cyDot) const {
+  // Solid dot, then three arcs fanning upward over it (classic Wi-Fi symbol).
+  renderer.fillRoundedRect(cx - 2, cyDot - 2, 5, 5, 2, Color::Black);
+  const int radii[3] = {5, 9, 13};
+  for (int a = 0; a < 3; ++a) {
+    const int rad = radii[a];
+    int px = -1, py = -1;
+    for (int deg = 218; deg <= 322; deg += 13) {  // ~from upper-left to upper-right over the top
+      const double t = deg * 3.14159265358979 / 180.0;
+      const int x = cx + static_cast<int>(std::lround(rad * std::cos(t)));
+      const int y = cyDot + static_cast<int>(std::lround(rad * std::sin(t)));
+      if (px >= 0) renderer.drawLine(px, py, x, y, 3, /*black=*/true);
+      px = x;
+      py = y;
+    }
+  }
+}
+
+void EpubReaderActivity::drawRemoteIndicatorIfActive() const {
+#ifdef PHASE2_REMOTE_DEBUG
+  if (!remote_ || !remote_->isActive()) return;
+  const int sw = renderer.getScreenWidth();
+  const int sh = renderer.getScreenHeight();
+  const int barH = UITheme::getInstance().getStatusBarHeight();
+  if (barH > 0) {
+    // In the bottom status bar, just right of the far-left battery indicator.
+    const int cx = 80;           // estimate: clears the "100%" + battery icon on the left
+    const int cyDot = sh - 6;    // dot near the bar's baseline; arcs fan up into the bar
+    renderer.fillRoundedRect(cx - 15, sh - barH + 2, 30, barH - 3, 4, Color::White);
+    drawWifiGlyph(cx, cyDot);
+  } else {
+    // No status bar shown: fall back to the top-right corner.
+    const int cx = sw - 20, cyDot = 21;
+    renderer.fillRoundedRect(cx - 17, 3, 34, 24, 5, Color::White);
+    drawWifiGlyph(cx, cyDot);
+  }
+#endif
+}
+
+void EpubReaderActivity::drawRemoteResult(bool ok, const char* title, const char* subtitle) {
+  renderer.clearScreen();
+  const int w = renderer.getScreenWidth();
+  const int h = renderer.getScreenHeight();
+  const int cx = w / 2;
+  const int badgeCy = h / 2 - 78;
+  const int r = 46;
+
+  // Filled black disc as the badge.
+  renderer.fillRoundedRect(cx - r, badgeCy - r, 2 * r, 2 * r, r, Color::Black);
+
+  // White glyph inside: checkmark on success, X on failure.
+  const int lw = 8;
+  if (ok) {
+    renderer.drawLine(cx - 21, badgeCy + 3, cx - 6, badgeCy + 18, lw, /*state(white)=*/false);
+    renderer.drawLine(cx - 6, badgeCy + 18, cx + 23, badgeCy - 18, lw, false);
+  } else {
+    renderer.drawLine(cx - 18, badgeCy - 18, cx + 18, badgeCy + 18, lw, false);
+    renderer.drawLine(cx - 18, badgeCy + 18, cx + 18, badgeCy - 18, lw, false);
+  }
+
+  // Title (bold) + lighter subtitle below the badge.
+  int ty = badgeCy + r + 30;
+  renderer.drawCenteredText(NOTOSANS_18_FONT_ID, ty, title, true, EpdFontFamily::BOLD);
+  if (subtitle && subtitle[0]) {
+    ty += renderer.getLineHeight(NOTOSANS_18_FONT_ID) + 12;
+    renderer.drawCenteredText(NOTOSANS_14_FONT_ID, ty, subtitle, true);
+  }
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+}
+
 void EpubReaderActivity::toggleRemoteSession() {
   if (remote_ && remote_->isActive()) {
     remote_->stop();
@@ -1370,11 +1478,18 @@ void EpubReaderActivity::toggleRemoteSession() {
   drawRemoteStatus("Remote session", "Connecting Wi-Fi...");
   remote_.reset(new RemoteReaderController(*this));
   if (remote_->begin()) {
-    const std::string l2 = "ws://" + remote_->ip() + ":81  (crosspoint.local)";
-    drawRemoteStatus("Remote session active", l2.c_str());
+    const std::string l2 = "crosspoint.local  ·  " + remote_->ip();
+    drawRemoteResult(true, "Connected", l2.c_str());
+    // Baseline the position so the resume-to-book render below isn't echoed as `pos`.
+    lastReportedSpine_ = currentSpineIndex;
+    lastReportedPage_ = section ? section->currentPage : -1;
+    delay(1600);            // brief glimpse of the address (mDNS means it's rarely needed)
+    requestUpdate(true);    // return to the book; the session stays live in the background
   } else {
-    drawRemoteStatus("Remote session failed", remote_->status().c_str());
+    // Hold the failure on screen until the user acknowledges with any button.
+    drawRemoteResult(false, "Couldn't connect", remote_->status().c_str());
     remote_.reset();
+    remoteAwaitDismiss_ = true;
   }
 }
 #endif  // PHASE2_REMOTE_DEBUG
@@ -1580,6 +1695,7 @@ void EpubReaderActivity::renderStatusBar() const {
   }
 
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked);
+  drawRemoteIndicatorIfActive();  // top-right Wi-Fi glyph while a remote session is live
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {
