@@ -29,6 +29,7 @@ class RemoteReaderController {
 
   EpubReaderActivity& reader_;
   std::unique_ptr<WebSocketsServer> ws_;
+  int lastClientNum_ = -1;  // most recent connected client, for targeted sends
   bool active_ = false;
   std::string ip_;
   std::string status_ = "idle";

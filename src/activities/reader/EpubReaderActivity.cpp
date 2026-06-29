@@ -451,6 +451,15 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+#ifdef PHASE2_REMOTE_DEBUG
+  // The user is navigating locally: lock out inbound phone nav immediately (so an
+  // in-flight command can't fight it) and flag a `pos` to emit once it renders.
+  if (remote_ && remote_->isActive()) {
+    remoteSuppressUntil_ = millis() + 1000;
+    remotePendingPosEmit_ = true;
+  }
+#endif
+
   // At end of the book, forward button goes home and back button returns to last page
   if (currentSpineIndex > 0 && currentSpineIndex >= epub->getSpineItemsCount()) {
     if (nextTriggered) {
@@ -1281,24 +1290,31 @@ bool EpubReaderActivity::remoteGotoParagraph(int spine, int para) {
 }
 
 int EpubReaderActivity::remoteCurrentParagraph() {
-  hlEnsurePageCache();
-  for (const auto& l : hlLines) {
-    if (l.block) return l.block->getParagraphIndex();
-  }
-  return 0;
+  return currentTopParagraph_;  // cached by the render task; never touches the SD here
 }
 
 std::string EpubReaderActivity::remoteFilePath() const { return epub ? epub->getPath() : std::string(); }
 
+std::string EpubReaderActivity::remotePosDiag() {
+  char buf[220];
+  snprintf(buf, sizeof(buf),
+           "active=%d spine=%d curPage=%d rndSpine=%d rndPage=%d topPara=%d lastSpine=%d lastPage=%d suppress=%ld",
+           (remote_ && remote_->isActive()) ? 1 : 0, currentSpineIndex, section ? section->currentPage : -1,
+           currentRenderedSpine_, currentRenderedPage_, currentTopParagraph_, lastReportedSpine_, lastReportedPage_,
+           static_cast<long>(remoteSuppressUntil_ > millis() ? remoteSuppressUntil_ - millis() : 0));
+  return std::string(buf);
+}
+
 void EpubReaderActivity::remoteReportPositionIfChanged() {
   if (!remote_ || !remote_->isActive() || !section) return;
-  if (currentSpineIndex == lastReportedSpine_ && section->currentPage == lastReportedPage_) return;
-  lastReportedSpine_ = currentSpineIndex;
-  lastReportedPage_ = section->currentPage;
-  // User grabbed control: lock out inbound nav briefly so an in-flight phone
-  // command can't snap the page back before the phone hears `pos` and stops.
-  remoteSuppressUntil_ = millis() + 1000;
-  remote_->sendPos(currentSpineIndex, remoteCurrentParagraph());
+  if (!remotePendingPosEmit_) return;  // only emit for user-initiated navigation
+  // Wait until the render has settled on the new page so the paragraph is correct.
+  // (The suppress window set at the button press keeps phone nav from moving it.)
+  if (currentRenderedSpine_ != currentSpineIndex || currentRenderedPage_ != section->currentPage) return;
+  remotePendingPosEmit_ = false;
+  lastReportedSpine_ = currentRenderedSpine_;
+  lastReportedPage_ = currentRenderedPage_;
+  remote_->sendPos(currentRenderedSpine_, currentTopParagraph_);  // plain-int reads; no SD here
 }
 
 bool EpubReaderActivity::remoteSeekParagraph(int para) {
@@ -1354,10 +1370,10 @@ bool EpubReaderActivity::remoteHighlightParaSentence(int spine, int para, int se
   if (sent < 0) sent = 0;
   if (sent >= static_cast<int>(paraSentences.size())) sent = static_cast<int>(paraSentences.size()) - 1;
 
-  // 4) Render: clean page + the highlighted sentence (cached-framebuffer path).
-  hlSnapshotCleanPage();
-  if (!hlSavedValid) return false;
-  memcpy(renderer.getFrameBuffer(), hlSavedBuffer.get(), hlSavedBufferSize);
+  // 4) Draw the highlight directly onto the freshly-rendered clean page. The
+  //    navigate in step 1 already painted the clean page into the framebuffer, so
+  //    no 48KB snapshot is needed — that second framebuffer was the heap pressure
+  //    that OOM'd (terminate/abort) under sustained load with Wi-Fi up.
   hlDrawSentence(paraSentences[sent]);
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   hlCurrent = -1;  // page-relative cycle state no longer applies
@@ -1498,6 +1514,18 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
   const auto t0 = millis();
+
+  // Capture top-of-page paragraph for remote position sync, here in the render
+  // task where the page is already loaded (the main task must NOT touch the SD).
+  currentRenderedSpine_ = currentSpineIndex;
+  currentRenderedPage_ = section ? section->currentPage : -1;
+  currentTopParagraph_ = 0;
+  for (const auto& el : page->elements) {
+    if (el->getTag() == TAG_PageLine) {
+      currentTopParagraph_ = static_cast<PageLine*>(el.get())->getBlock()->getParagraphIndex();
+      break;
+    }
+  }
   const int fontId = SETTINGS.getReaderFontId();
 
   // Font prewarm: scan pass accumulates text, then prewarm, then real render

@@ -70,6 +70,7 @@ bool RemoteReaderController::begin() {
   ws_->onEvent([this](uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
       case WStype_CONNECTED: {
+        lastClientNum_ = num;
         LOG_INF("REMOTE", "client %u connected", num);
         // Hand the phone our current position so it can reconcile against the cloud.
         JsonDocument out;
@@ -86,6 +87,7 @@ bool RemoteReaderController::begin() {
         handleText(num, payload, length);
         break;
       case WStype_DISCONNECTED:
+        if (static_cast<int>(num) == lastClientNum_) lastClientNum_ = -1;
         LOG_INF("REMOTE", "client %u disconnected", num);
         break;
       default:
@@ -104,14 +106,14 @@ void RemoteReaderController::update() {
 }
 
 void RemoteReaderController::sendPos(int spine, int para) {
-  if (!active_ || !ws_) return;
+  if (!active_ || !ws_ || lastClientNum_ < 0) return;
   JsonDocument out;
   out["evt"] = "pos";
   out["spine"] = spine;
   out["para"] = para;
   String s;
   serializeJson(out, s);
-  ws_->broadcastTXT(s);
+  ws_->sendTXT(static_cast<uint8_t>(lastClientNum_), s);
 }
 
 void RemoteReaderController::stop() {
@@ -144,6 +146,14 @@ void RemoteReaderController::handleText(uint8_t num, const uint8_t* payload, siz
     JsonDocument out;
     out["evt"] = "count";
     out["n"] = n;
+    String s;
+    serializeJson(out, s);
+    ws_->sendTXT(num, s);
+  } else if (strcmp(cmd, "posdiag") == 0) {
+    JsonDocument out;
+    out["evt"] = "posdiag";
+    out["info"] = reader_.remotePosDiag();
+    out["client"] = lastClientNum_;
     String s;
     serializeJson(out, s);
     ws_->sendTXT(num, s);

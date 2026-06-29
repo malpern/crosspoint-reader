@@ -53,6 +53,12 @@ class EpubReaderActivity final : public Activity {
   // Consumed in onExit() to relocate the finished book into /Read/.
   bool pendingReadFolderMove = false;
 
+  // Captured by the render task each render (no extra I/O), read by the main task
+  // for remote position sync — avoids SD access races with the render task.
+  int currentTopParagraph_ = 0;
+  int currentRenderedSpine_ = -1;
+  int currentRenderedPage_ = -1;
+
   // Footnote support
   std::vector<FootnoteEntry> currentPageFootnotes;
   struct SavedPosition {
@@ -123,6 +129,9 @@ class EpubReaderActivity final : public Activity {
   unsigned long remoteSuppressUntil_ = 0;
   // While true, a failure/status message is held on screen until any button dismisses it.
   bool remoteAwaitDismiss_ = false;
+  // Set when the USER turns a page (button), cleared once the new page renders and
+  // its `pos` is emitted. Distinguishes user navigation from phone-driven nav.
+  bool remotePendingPosEmit_ = false;
 #endif
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
@@ -181,6 +190,7 @@ class EpubReaderActivity final : public Activity {
   int remoteCurrentSpine() const { return currentSpineIndex; }
   int remoteCurrentParagraph();
   std::string remoteFilePath() const;
+  std::string remotePosDiag();  // debug: raw position-sync state (no nav, no SD)
 #endif
   ScreenshotInfo getScreenshotInfo() const override;
   CrossPointPosition getCurrentPosition() const;
