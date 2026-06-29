@@ -979,11 +979,35 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // paragraph jump (<p> ordinal) to its page. Runs whether or not the section was
   // just reloaded, so same-spine jumps work too.
   if (pendingParagraphJump.has_value() && section) {
-    if (const auto page = section->getPageForParagraphIndex(*pendingParagraphJump)) {
-      section->currentPage = *page;
-      LOG_DBG("ERS", "Remote: paragraph %u -> page %d", *pendingParagraphJump, *page);
-    }
+    const uint16_t targetPara = *pendingParagraphJump;
     pendingParagraphJump.reset();
+    if (const auto est = section->getPageForParagraphIndex(targetPara)) {
+      int resolved = *est;
+      // The LUT lands ~1 page early; peek forward (geometry only, NO display) to the
+      // page that actually contains the paragraph, so we render the right page in a
+      // single pass — no intermediate "wrong page" flashes.
+      const int maxPage = section->pageCount - 1;
+      for (int c = *est; c <= std::min(*est + 4, maxPage); ++c) {
+        section->currentPage = c;
+        auto pg = section->loadPageFromSectionFile();
+        bool found = false;
+        if (pg) {
+          for (const auto& el : pg->elements) {
+            if (el->getTag() == TAG_PageLine &&
+                static_cast<PageLine*>(el.get())->getBlock()->getParagraphIndex() == targetPara) {
+              found = true;
+              break;
+            }
+          }
+        }
+        if (found) {
+          resolved = c;
+          break;
+        }
+      }
+      section->currentPage = resolved;
+      LOG_DBG("ERS", "Remote: paragraph %u -> page %d", targetPara, resolved);
+    }
   }
 #endif
 
@@ -1281,8 +1305,7 @@ bool EpubReaderActivity::remoteGotoParagraph(int spine, int para) {
     }
     pendingParagraphJump = static_cast<uint16_t>(para);
   }
-  requestUpdateAndWait();  // render task resolves paragraph -> page and paints
-  if (para >= 1) remoteSeekParagraph(para);  // correct the LUT's ~1-page-early landing
+  requestUpdateAndWait();  // render resolves paragraph -> correct page (peek) and paints, once
   // Phone-driven navigation: update the baseline so it isn't echoed back as a `pos`.
   lastReportedSpine_ = currentSpineIndex;
   lastReportedPage_ = section ? section->currentPage : -1;
@@ -1317,21 +1340,6 @@ void EpubReaderActivity::remoteReportPositionIfChanged() {
   remote_->sendPos(currentRenderedSpine_, currentTopParagraph_);  // plain-int reads; no SD here
 }
 
-bool EpubReaderActivity::remoteSeekParagraph(int para) {
-  for (int tries = 0; tries < 5; ++tries) {
-    hlEnsurePageCache();
-    for (const auto& l : hlLines) {
-      if (l.block && l.block->getParagraphIndex() == static_cast<uint16_t>(para)) return true;
-    }
-    if (!section || section->currentPage >= section->pageCount - 1) return false;
-    {
-      RenderLock lock(*this);
-      section->currentPage += 1;
-    }
-    requestUpdateAndWait();
-  }
-  return false;
-}
 
 bool EpubReaderActivity::remoteHighlightParaSentence(int spine, int para, int sent) {
   if (millis() < remoteSuppressUntil_) return false;  // user is in control; ignore phone nav
@@ -1426,10 +1434,11 @@ bool EpubReaderActivity::remoteHighlightParagraph(int spine, int para) {
   }
   if (top > bottom) return false;  // paragraph not on the resolved page
 
-  // Calm left-margin accent bar spanning the paragraph (no text inversion). Draws
-  // directly on the already-clean framebuffer; one refresh per paragraph.
-  const int barW = 4;
-  const int barX = std::max(0, hlMarginLeft - 6);
+  // Left-margin accent bar spanning the paragraph (no text inversion). Fills the
+  // left margin so it's clearly visible without touching the text. Draws directly
+  // on the already-clean framebuffer.
+  const int barX = 0;
+  const int barW = std::max(6, hlMarginLeft - 1);  // up to the text edge
   renderer.fillRect(barX, top, barW, bottom - top, true);
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   hlCurrent = -1;

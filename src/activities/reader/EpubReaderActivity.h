@@ -116,9 +116,6 @@ class EpubReaderActivity final : public Activity {
   void drawRemoteResult(bool ok, const char* title, const char* subtitle);  // badge + title + subtitle
   void drawWifiGlyph(int cx, int cyDot) const;  // small Wi-Fi fan (dot + 3 arcs) at (cx, dot)
   void drawRemoteIndicatorIfActive() const;     // top-right session indicator, drawn each render
-  // The paragraph->page LUT lands ~1 page early; after the estimate, advance pages
-  // until paragraph `para` is actually present (line stamps are correct). True if found.
-  bool remoteSeekParagraph(int para);
   // Emit a {"evt":"pos",...} when the user navigates ON the X4 (page/spine changed
   // since last report). Phone-driven navigation updates the baseline so it doesn't echo.
   void remoteReportPositionIfChanged();
