@@ -182,16 +182,18 @@ void RemoteReaderController::handleText(uint8_t num, const uint8_t* payload, siz
     ws_->sendTXT(num, s);
   } else if (strcmp(cmd, "highlight") == 0) {
     if (!doc["para"].isNull()) {
-      // Phase 3 precise highlight: (spine, para, sent) [+ optional text].
+      // Phase 3 highlight. With "sent" -> precise sentence; without -> whole paragraph.
       const int spine = doc["spine"] | -1;
       const int para = doc["para"] | 1;
+      const bool paragraphMode = doc["sent"].isNull();
       const int sent = doc["sent"] | 0;
-      const bool ok = reader_.remoteHighlightParaSentence(spine, para, sent);
+      const bool ok = paragraphMode ? reader_.remoteHighlightParagraph(spine, para)
+                                    : reader_.remoteHighlightParaSentence(spine, para, sent);
       JsonDocument out;
       out["evt"] = "hl";
       out["spine"] = spine;
       out["para"] = para;
-      out["sent"] = sent;
+      out["sent"] = paragraphMode ? -1 : sent;  // -1 = whole-paragraph highlight
       out["ok"] = ok;
       String s;
       serializeJson(out, s);

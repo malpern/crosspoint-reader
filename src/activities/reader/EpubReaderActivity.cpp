@@ -1406,6 +1406,37 @@ std::string EpubReaderActivity::remoteDiag(int para) {
   return std::string(buf);
 }
 
+bool EpubReaderActivity::remoteHighlightParagraph(int spine, int para) {
+  if (millis() < remoteSuppressUntil_) return false;  // user is in control
+  if (para < 1) para = 1;
+  // Navigate so the paragraph is on screen (renders the clean page into the framebuffer).
+  remoteGotoParagraph(spine, para);
+  hlEnsurePageCache();
+  if (hlLines.empty()) return false;
+
+  // Vertical extent of this paragraph's lines on the current page.
+  const int lineH = renderer.getLineHeight(hlFontId);
+  int top = std::numeric_limits<int>::max();
+  int bottom = std::numeric_limits<int>::min();
+  for (const auto& l : hlLines) {
+    if (!l.block || l.block->getParagraphIndex() != static_cast<uint16_t>(para)) continue;
+    const int lt = hlMarginTop + l.yPos;
+    top = std::min(top, lt);
+    bottom = std::max(bottom, lt + lineH);
+  }
+  if (top > bottom) return false;  // paragraph not on the resolved page
+
+  // Calm left-margin accent bar spanning the paragraph (no text inversion). Draws
+  // directly on the already-clean framebuffer; one refresh per paragraph.
+  const int barW = 4;
+  const int barX = std::max(0, hlMarginLeft - 6);
+  renderer.fillRect(barX, top, barW, bottom - top, true);
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  hlCurrent = -1;
+  LOG_INF("HL", "remote highlight paragraph spine=%d para=%d", spine, para);
+  return true;
+}
+
 void EpubReaderActivity::drawRemoteStatus(const char* line1, const char* line2) {
   renderer.clearScreen();
   const int cy = renderer.getScreenHeight() / 2;

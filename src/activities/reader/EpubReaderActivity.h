@@ -182,6 +182,9 @@ class EpubReaderActivity final : public Activity {
   // landed page. (v1: a paragraph spanning pages only resolves sentences on its
   // start page.)
   bool remoteHighlightParaSentence(int spine, int para, int sent);
+  // Paragraph-granularity highlight: navigate to paragraph `para` and mark the whole
+  // paragraph with a calm left-margin accent bar (far fewer refreshes than per-sentence).
+  bool remoteHighlightParagraph(int spine, int para);
   // Debug: after landing on paragraph `para`'s page, report the page + the distinct
   // paragraph indices actually present on it (to diagnose page-lookup alignment).
   std::string remoteDiag(int para);
