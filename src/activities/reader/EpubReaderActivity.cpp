@@ -262,16 +262,48 @@ void EpubReaderActivity::loop() {
     }
     return;
   }
-  // Phase 2 debug trigger: Volume Up starts/stops the remote session (Wi-Fi +
-  // WebSocket). Fire on PRESS and return so it preempts detectPageTurn(); pages
-  // turn with Left/Right. While active, pump the WebSocket each loop.
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
-    toggleRemoteSession();
-    return;
-  }
-  if (remote_ && remote_->isActive()) {
+  using B = MappedInputManager::Button;
+  const bool sessionActive = remote_ && remote_->isActive();
+  if (!sessionActive) {
+    // No session: Volume Up starts one. Fire on PRESS, return so it preempts
+    // detectPageTurn(). (Volume Down + everything else: normal reader behavior.)
+    if (mappedInput.wasPressed(B::Up)) {
+      toggleRemoteSession();
+      return;
+    }
+  } else {
+    // Phase 4: while a session is active the Volume rocker is the TTS remote,
+    // forwarded to the phone as `button` events. Left/Right still page (and trigger
+    // local authority). We track each button's OWN press time — getHeldTime() is a
+    // single global timer that misreads rocker overlap (a tap could read as a long
+    // press and tear down the session).
+    constexpr unsigned long REMOTE_BTN_LONG_MS = 500;
+    if (mappedInput.wasPressed(B::Up)) volUpPressedAt_ = millis();
+    if (mappedInput.wasPressed(B::Down)) volDownPressedAt_ = millis();
+    if (mappedInput.wasReleased(B::Up)) {
+      const bool longPress = volUpPressedAt_ != 0 && (millis() - volUpPressedAt_) >= REMOTE_BTN_LONG_MS;
+      volUpPressedAt_ = 0;
+      remote_->sendButton(longPress ? "prev" : "playpause");
+      return;
+    }
+    if (mappedInput.wasReleased(B::Down)) {
+      const bool longPress = volDownPressedAt_ != 0 && (millis() - volDownPressedAt_) >= REMOTE_BTN_LONG_MS;
+      volDownPressedAt_ = 0;
+      if (longPress) {
+        toggleRemoteSession();  // long-press Volume Down ends the session
+      } else {
+        remote_->sendButton("next");
+      }
+      return;
+    }
+    // Pump the WebSocket every loop FIRST (so it keeps running even while a volume
+    // button is held), then swallow the rocker's hold so detectPageTurn() never
+    // pages on it.
     remote_->update();
     remoteReportPositionIfChanged();  // emit `pos` when the user turns pages on the X4
+    if (mappedInput.isPressed(B::Up) || mappedInput.isPressed(B::Down)) {
+      return;
+    }
   }
 #elif defined(PHASE1_HIGHLIGHT_DEBUG)
   // Phase 1 debug trigger: Volume Up cycles the highlighted sentence on the
@@ -1262,6 +1294,7 @@ void EpubReaderActivity::hlRefresh(int ordinal) {
 }
 
 void EpubReaderActivity::hlCycleNext() {
+  RenderLock lock(*this);  // SD read (page cache) + framebuffer draw — serialize vs render task
   hlEnsurePageCache();
   if (hlSentences.empty()) return;
   hlCurrent = (hlCurrent + 1) % static_cast<int>(hlSentences.size());
@@ -1272,20 +1305,20 @@ void EpubReaderActivity::hlCycleNext() {
 
 #ifdef PHASE2_REMOTE_DEBUG
 int EpubReaderActivity::remoteSentenceCount() {
+  RenderLock lock(*this);  // hlEnsurePageCache reads the SD — serialize vs render task
   hlEnsurePageCache();
   return static_cast<int>(hlSentences.size());
 }
 
 bool EpubReaderActivity::remoteHighlightSentence(int ordinal) {
+  // Re-render the clean page first (no lock held), then read geometry + draw under
+  // a RenderLock so this main-task path doesn't race the render task.
+  requestUpdateAndWait();
+  RenderLock lock(*this);
   hlEnsurePageCache();
   if (hlSentences.empty()) return false;
   if (ordinal < 0) ordinal = 0;
   if (ordinal >= static_cast<int>(hlSentences.size())) ordinal = static_cast<int>(hlSentences.size()) - 1;
-  // The session-start status screen (or a stale snapshot) may not be the book
-  // page; re-render the clean page synchronously so the snapshot is correct.
-  if (!hlSavedValid) {
-    requestUpdateAndWait();
-  }
   hlCurrent = ordinal;
   hlRefresh(ordinal);  // snapshots clean page (lazy), draws highlight, HALF refresh
   return true;
@@ -1344,8 +1377,15 @@ void EpubReaderActivity::remoteReportPositionIfChanged() {
 bool EpubReaderActivity::remoteHighlightParaSentence(int spine, int para, int sent) {
   if (millis() < remoteSuppressUntil_) return false;  // user is in control; ignore phone nav
   if (para < 1) para = 1;
-  // 1) Navigate so paragraph `para` is on screen (renders the clean page).
+  // 1) Navigate so paragraph `para` is on screen (renders the clean page). This
+  //    runs requestUpdateAndWait() with NO lock held.
   remoteGotoParagraph(spine, para);
+
+  // Serialize the SD read + framebuffer draw against the render task. Every other
+  // draw/SD site in this file holds a RenderLock; the remote paths run on the main
+  // (loop/WebSocket) task and must too, or they race the render task (torn frame /
+  // panel hang / corrupt SD read). remoteGotoParagraph already released its lock.
+  RenderLock lock(*this);
   // 2) Build line geometry for the now-current page.
   hlEnsurePageCache();
   if (hlLines.empty()) return false;
@@ -1395,6 +1435,7 @@ std::string EpubReaderActivity::remoteDiag(int para) {
   const int pageForPara =
       section ? static_cast<int>(section->getPageForParagraphIndex(static_cast<uint16_t>(para)).value_or(0xFFFF)) : -1;
   remoteGotoParagraph(-1, para);  // land where the lookup says paragraph `para` is
+  RenderLock lock(*this);         // hlEnsurePageCache reads the SD — serialize vs render task
   hlEnsurePageCache();
   // Distinct paragraph indices present on the landed page, in order.
   std::string paras;
@@ -1419,6 +1460,7 @@ bool EpubReaderActivity::remoteHighlightParagraph(int spine, int para) {
   if (para < 1) para = 1;
   // Navigate so the paragraph is on screen (renders the clean page into the framebuffer).
   remoteGotoParagraph(spine, para);
+  RenderLock lock(*this);  // serialize SD read + framebuffer draw vs the render task
   hlEnsurePageCache();
   if (hlLines.empty()) return false;
 
@@ -1447,6 +1489,7 @@ bool EpubReaderActivity::remoteHighlightParagraph(int spine, int para) {
 }
 
 void EpubReaderActivity::drawRemoteStatus(const char* line1, const char* line2) {
+  RenderLock lock(*this);  // main-task draw — serialize vs the render task
   renderer.clearScreen();
   const int cy = renderer.getScreenHeight() / 2;
   renderer.drawCenteredText(NOTOSANS_16_FONT_ID, cy - 24, line1);
@@ -1494,6 +1537,7 @@ void EpubReaderActivity::drawRemoteIndicatorIfActive() const {
 }
 
 void EpubReaderActivity::drawRemoteResult(bool ok, const char* title, const char* subtitle) {
+  RenderLock lock(*this);  // main-task draw — serialize vs the render task
   renderer.clearScreen();
   const int w = renderer.getScreenWidth();
   const int h = renderer.getScreenHeight();
@@ -1532,7 +1576,12 @@ void EpubReaderActivity::toggleRemoteSession() {
     return;
   }
   drawRemoteStatus("Remote session", "Connecting Wi-Fi...");
-  remote_.reset(new RemoteReaderController(*this));
+  remote_ = makeUniqueNoThrow<RemoteReaderController>(*this);  // bare new aborts on OOM (-fno-exceptions)
+  if (!remote_) {
+    drawRemoteResult(false, "Couldn't connect", "Out of memory");
+    remoteAwaitDismiss_ = true;
+    return;
+  }
   if (remote_->begin()) {
     const std::string l2 = "crosspoint.local  ·  " + remote_->ip();
     drawRemoteResult(true, "Connected", l2.c_str());
@@ -1763,7 +1812,9 @@ void EpubReaderActivity::renderStatusBar() const {
   }
 
   GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked);
+#ifdef PHASE2_REMOTE_DEBUG
   drawRemoteIndicatorIfActive();  // top-right Wi-Fi glyph while a remote session is live
+#endif
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {

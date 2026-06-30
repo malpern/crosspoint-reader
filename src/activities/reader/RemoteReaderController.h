@@ -21,6 +21,7 @@ class RemoteReaderController {
   void stop();                  // stop WS + disconnect Wi-Fi (no reboot)
   void sendPos(int spine, int para);  // broadcast {"evt":"pos",...} on X4-side navigation
   bool isActive() const { return active_; }
+  void sendButton(const char* action);  // Phase 4: forward a physical button to the phone
   const std::string& ip() const { return ip_; }
   const std::string& status() const { return status_; }
 

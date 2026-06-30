@@ -10,6 +10,7 @@
 
 #include "EpubReaderActivity.h"
 #include "Logging.h"
+#include "Memory.h"
 #include "WifiCredentialStore.h"
 
 namespace {
@@ -65,8 +66,17 @@ bool RemoteReaderController::begin() {
     MDNS.addService("ws", "tcp", kRemotePort);
   }
 
-  // 3) Minimal WebSocket server.
-  ws_.reset(new WebSocketsServer(kRemotePort));
+  // 3) Minimal WebSocket server. makeUniqueNoThrow: a bare `new` aborts on OOM
+  // (-fno-exceptions), and the heap is at its tightest right after the Wi-Fi stack
+  // comes up. Fail the session gracefully instead of rebooting the device.
+  ws_ = makeUniqueNoThrow<WebSocketsServer>(kRemotePort);
+  if (!ws_) {
+    status_ = "Out of memory";
+    LOG_ERR("REMOTE", "WebSocketsServer alloc failed");
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    return false;
+  }
   ws_->onEvent([this](uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
       case WStype_CONNECTED: {
@@ -114,6 +124,17 @@ void RemoteReaderController::sendPos(int spine, int para) {
   String s;
   serializeJson(out, s);
   ws_->sendTXT(static_cast<uint8_t>(lastClientNum_), s);
+}
+
+void RemoteReaderController::sendButton(const char* action) {
+  if (!active_ || !ws_ || lastClientNum_ < 0) return;
+  JsonDocument out;
+  out["evt"] = "button";
+  out["action"] = action;
+  String s;
+  serializeJson(out, s);
+  ws_->sendTXT(static_cast<uint8_t>(lastClientNum_), s);
+  LOG_INF("REMOTE", "button -> %s", action);
 }
 
 void RemoteReaderController::stop() {

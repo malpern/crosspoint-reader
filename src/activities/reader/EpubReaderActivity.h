@@ -129,6 +129,10 @@ class EpubReaderActivity final : public Activity {
   // Set when the USER turns a page (button), cleared once the new page renders and
   // its `pos` is emitted. Distinguishes user navigation from phone-driven nav.
   bool remotePendingPosEmit_ = false;
+  // Per-button press timestamps for Phase-4 long-press detection (getHeldTime() is a
+  // single global timer that misreads rocker overlap). 0 = not pressed.
+  unsigned long volUpPressedAt_ = 0;
+  unsigned long volDownPressedAt_ = 0;
 #endif
 
   void renderContents(std::unique_ptr<Page> page, int orientedMarginTop, int orientedMarginRight,
